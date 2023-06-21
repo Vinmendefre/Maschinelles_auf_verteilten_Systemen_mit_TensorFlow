@@ -1,14 +1,16 @@
-import math
-from typing import List
+import abc
 
 import tensorflow as tf
 import argparse
 import os
-import numpy as np
 import json
 from tensorflow.keras.preprocessing.image import img_to_array, load_img
-import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
+import pandas as pd
+
+import math
+from typing import List
 
 
 # Erstellen des Modells
@@ -122,21 +124,137 @@ def get_arc_model(
     return model
 
 
-# Laden und Vorbereiten der Daten
+class BaseDataLoader(abc.ABC):
+    """
+    Base class loading datasets
+
+    """
+
+    def __init__(
+            self,
+            base_path: str,
+            filenames: List[str],
+            labels: List[str],
+            target_height: int,
+            target_width: int,
+            batch_size: int,
+            shuffle_buffer_size: int,
+            data_augmentation: bool,
+    ):
+        self.base_path = base_path
+        self.filenames = filenames
+        self.labels = labels
+        self.target_height = target_height
+        self.target_width = target_width
+        self.batch_size = batch_size
+        self.shuffle_buffer_size = shuffle_buffer_size
+        self.data_augmentation = data_augmentation
+
+    @abc.abstractmethod
+    def get_dataset(self) -> tf.data.Dataset:
+        """
+        Abstract method for training dataset creation
+        """
+        pass
+
+    def get_evaluation_dataset(self) -> tf.data.Dataset:
+        """Create data input pipeline."""
+
+        load_fn = self._get_load_img_fn(
+            base_path=self.base_path,
+            target_height=self.target_height,
+            target_width=self.target_width,
+            data_augmentation=False,
+        )
+
+        def decode_image(filename):
+            """Load and preprocess image"""
+            num_retries = 10
+            for _ in range(num_retries):
+                try:
+                    return load_fn(filename)
+                except Exception:
+                    time.sleep(1)
+
+        dataset = tf.data.Dataset.from_tensor_slices((self.filenames,))
+        dataset = dataset.map(
+            decode_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
+        )
+        dataset = dataset.batch(self.batch_size, drop_remainder=False)
+        return dataset.prefetch(tf.data.experimental.AUTOTUNE)
+
+    def _get_load_img_fn(
+            self,
+            base_path="/opt/ml/input/data/train/datasets/train_images_rescaled_partial",
+            target_height=300,
+            target_width=300,
+            channels=3,
+            data_augmentation=True,
+    ):
+        """Return load image function."""
+
+        image_processing = tf.keras.Sequential()
+        image_processing.add(tf.keras.layers.Resizing(target_height, target_width))
+
+        if data_augmentation:
+            image_processing.add(
+                tf.keras.layers.RandomRotation(
+                    factor=0.1,
+                    fill_mode="nearest",
+                    interpolation="bilinear",
+                )
+            )
+            image_processing.add(tf.keras.layers.RandomFlip("horizontal"))
+
+        def load_img(filename):
+            """Return image."""
+            img = tf.io.read_file(base_path + "/" + filename)
+            img = tf.io.decode_image(img, channels=channels, expand_animations=False)
+            img = image_processing(img)
+            return tf.cast(tf.expand_dims(img, 0), tf.uint8)[0]
+
+        return load_img
+
+
+class ArcFaceDataLoader(BaseDataLoader):
+    """
+    Data loader class for ArcFace architecture.
+
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def get_dataset(self) -> tf.data.Dataset:
+        """Create data input pipeline."""
+
+        load_fn = self._get_load_img_fn(
+            base_path=self.base_path,
+            target_height=self.target_height,
+            target_width=self.target_height,
+            data_augmentation=self.data_augmentation,
+        )
+
+        def filename_label_to_item(filename, label):
+            return (
+                {
+                    "inp1": load_fn(filename),
+                    "inp2": label,
+                },
+                label,
+            )
+
+        dataset = tf.data.Dataset.from_tensor_slices((self.filenames, self.labels))
+        dataset = dataset.shuffle(buffer_size=self.shuffle_buffer_size)
+        dataset = dataset.map(
+            filename_label_to_item, num_parallel_calls=tf.data.experimental.AUTOTUNE
+        )
+        dataset = dataset.batch(self.batch_size, drop_remainder=True)
+        return dataset.prefetch(tf.data.experimental.AUTOTUNE)
+
+
+# old load data, probably not needed anymore
 def _load_data(dat_dir):
-    if os.path.exists(os.path.join(dat_dir, 'train_images.npy')) or os.path.exists(
-            os.path.join(dat_dir, 'train_labels.npy')):
-        # load the data from numpy file if it exists
-        print("Loading from, npy files")
-        images = np.load(os.path.join(dat_dir, 'train_images.npy'))
-        labels = np.load(os.path.join(dat_dir, 'train_labels.npy'))
-
-        # return images, labels
-        return train_test_split(images, labels, test_size=0.2, random_state=42)
-        # return train_images, test_images, train_labels, test_labels = train_test_split(images, labels, test_size=0.2, random_state=42)
-
-    print("No existing npy detected, loading data from directory")
-    # if a npy file is missing they images and csv will get read out and saved
     csv_path = os.path.join(dat_dir, 'test.csv')  # TODO change this to train once testing is done
     data_df = pd.read_csv(csv_path)
 
@@ -159,7 +277,6 @@ def _load_data(dat_dir):
     np.save(os.path.join(dat_dir, 'train_images.npy'), images, allow_pickle=True)
     np.save(os.path.join(dat_dir, 'train_labels.npy'), labels, allow_pickle=True)
 
-    # der Random State bleibt gleich um möglichst gleiche Testbedingungen zu schaffen
     return train_test_split(images, labels, test_size=0.2, random_state=42)
 
 
@@ -179,17 +296,30 @@ def _parse_args():
 if __name__ == "__main__":
     args, unknown = _parse_args()
 
-    root_path = '/root/datasets'
-    _load_data(root_path)
+    data_path = '/opt/ml/input/data/train' #this is the base path where our data was downloaded, in the created image
+    train_path = os.path.join(data_path, 'train_images_rescaled_partial') #change path to image dir here
+    csv_path = os.path.join(data_path, 'train.csv')
+    df = pd.read_csv(csv_path)
 
-    train_images, test_images, train_labels, test_labels = _load_data(args.train)
-    n_classes = max(max(train_labels), max(test_labels)) + 1
+    image_paths = df['image'].tolist()
+    image_labels = df['label_group'].tolist()
+    train_data_loader = ArcFaceDataLoader(
+        base_path=train_path,
+        labels=image_labels,
+        filenames=image_paths,
+        target_width=300,
+        target_height=300,
+        batch_size=32,
+        shuffle_buffer_size=50,
+        data_augmentation=True)
 
-    print('Training model for {} epochs..\n\n'.format(args.epochs))
+    train_dataset = train_data_loader.get_dataset()
 
-    model = get_arc_model(n_classes=n_classes, dense_layers=[5, 5])
-    model.fit(train_images, train_labels, epochs=args.epochs)
-    model.evaluate(test_images, test_labels)
+    n_classes = int(max(image_labels) + 1)
+
+    model = get_arc_model(n_classes=n_classes, dense_layers=[512])
+    model.fit(train_dataset, epochs=args.epochs)
+    # model.evaluate(test_dataset)
 
     if args.current_host == args.hosts[0]:
         # save model to an S3 directory with version number '00000001'
