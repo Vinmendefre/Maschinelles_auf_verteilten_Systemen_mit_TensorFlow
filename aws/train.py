@@ -4,9 +4,6 @@ import tensorflow as tf
 import argparse
 import os
 import json
-from tensorflow.keras.preprocessing.image import img_to_array, load_img
-import numpy as np
-from sklearn.model_selection import train_test_split
 import pandas as pd
 
 import math
@@ -251,33 +248,6 @@ class ArcFaceDataLoader(BaseDataLoader):
         )
         dataset = dataset.batch(self.batch_size, drop_remainder=True)
         return dataset.prefetch(tf.data.experimental.AUTOTUNE)
-
-
-# old load data, probably not needed anymore
-def _load_data(dat_dir):
-    csv_path = os.path.join(dat_dir, 'test.csv')  # TODO change this to train once testing is done
-    data_df = pd.read_csv(csv_path)
-
-    images = []
-    labels = []
-
-    image_dir = os.path.join(dat_dir, 'test_images')
-
-    for index, row in data_df.iterrows():
-        image_path = os.path.join(image_dir, row['image'])
-        image = load_img(image_path, target_size=(300, 300))
-        image_array = img_to_array(image)
-        images.append(image_array)
-        labels.append(row['label_group'])
-
-    images = np.array(images, dtype="float32")
-    labels = np.array(labels, dtype="float32")
-    print(images[0])
-
-    np.save(os.path.join(dat_dir, 'train_images.npy'), images, allow_pickle=True)
-    np.save(os.path.join(dat_dir, 'train_labels.npy'), labels, allow_pickle=True)
-
-    return train_test_split(images, labels, test_size=0.2, random_state=42)
 
 
 def _parse_args():
