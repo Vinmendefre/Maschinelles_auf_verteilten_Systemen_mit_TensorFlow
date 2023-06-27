@@ -296,30 +296,49 @@ def _parse_args():
 if __name__ == "__main__":
     args, unknown = _parse_args()
 
-    data_path = '/opt/ml/input/data/train' #this is the base path where our data was downloaded, in the created image
-    train_path = os.path.join(data_path, 'train_images_rescaled_partial') #change path to image dir here
-    csv_path = os.path.join(data_path, 'train.csv')
-    df = pd.read_csv(csv_path)
+    LOG_DIR = "/opt/ml/output/tensorboard"
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(
+        log_dir=LOG_DIR, histogram_freq=1)
 
-    image_paths = df['image'].tolist()
-    image_labels = df['label_group'].tolist()
-    train_data_loader = ArcFaceDataLoader(
+    data_path = '/opt/ml/input/data/train'
+    train_path = os.path.join(data_path, 'train_images_rescaled_partial')
+    test_path = os.path.join(data_path, 'clown_fiesta')
+    train_csv_path = os.path.join(data_path, 'train.csv')
+    test_csv_path = os.path.join(data_path, 'train.csv')
+    train_df = pd.read_csv(train_csv_path)
+
+    train_image_paths = train_df['image'].tolist()
+    train_image_labels = train_df['label_group'].tolist()
+    arc_face_data_loader = ArcFaceDataLoader(
         base_path=train_path,
-        labels=image_labels,
-        filenames=image_paths,
+        labels=train_image_labels,
+        filenames=train_image_paths,
         target_width=300,
         target_height=300,
         batch_size=32,
         shuffle_buffer_size=50,
         data_augmentation=True)
 
-    train_dataset = train_data_loader.get_dataset()
+    test_image_paths = train_df['image'].tolist()
+    test_image_labels = train_df['label_group'].tolist()
+    test_data_loader = ArcFaceDataLoader(
+        base_path=test_path,
+        labels=test_image_labels,
+        filenames=test_image_paths,
+        target_width=300,
+        target_height=300,
+        batch_size=32,
+        shuffle_buffer_size=50,
+        data_augmentation=True)
 
-    n_classes = int(max(image_labels) + 1)
+    train_dataset = arc_face_data_loader.get_dataset()
+    test_dataset = test_data_loader.get_dataset()
+
+    n_classes = int(max(max(train_image_labels), max(test_image_labels)) + 1)
 
     model = get_arc_model(n_classes=n_classes, dense_layers=[512])
-    model.fit(train_dataset, epochs=args.epochs)
-    # model.evaluate(test_dataset)
+    model.fit(train_dataset, epochs=args.epochs, callbacks=tensorboard_callback)
+    model.evaluate(test_dataset)
 
     if args.current_host == args.hosts[0]:
         # save model to an S3 directory with version number '00000001'
