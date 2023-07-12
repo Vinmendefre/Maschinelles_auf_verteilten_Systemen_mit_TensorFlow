@@ -1,5 +1,6 @@
 import abc
-
+from abc import ABC
+from datetime import time
 import tensorflow as tf
 import argparse
 import os
@@ -10,7 +11,6 @@ import math
 from typing import List
 
 
-# Erstellen des Modells
 class ArcMarginProduct(tf.keras.layers.Layer):
     """
     Implements large margin arc distance.
@@ -109,7 +109,7 @@ def get_arc_model(
     output = tf.keras.layers.Softmax(dtype="float32")(x)
 
     model = tf.keras.models.Model(inputs=[inp, label], outputs=[output])
-
+    print(model.summary())
     opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
     model.compile(
@@ -120,23 +120,22 @@ def get_arc_model(
 
     return model
 
-
-class BaseDataLoader(abc.ABC):
+class BaseDataLoader(ABC):
     """
     Base class loading datasets
 
     """
 
     def __init__(
-            self,
-            base_path: str,
-            filenames: List[str],
-            labels: List[str],
-            target_height: int,
-            target_width: int,
-            batch_size: int,
-            shuffle_buffer_size: int,
-            data_augmentation: bool,
+        self,
+        base_path: str,
+        filenames: List[str],
+        labels: List[str],
+        target_height: int,
+        target_width: int,
+        batch_size: int,
+        shuffle_buffer_size: int,
+        data_augmentation: bool,
     ):
         self.base_path = base_path
         self.filenames = filenames
@@ -181,12 +180,12 @@ class BaseDataLoader(abc.ABC):
         return dataset.prefetch(tf.data.experimental.AUTOTUNE)
 
     def _get_load_img_fn(
-            self,
-            base_path="/opt/ml/input/data/train/datasets/train_images_rescaled_partial",
-            target_height=300,
-            target_width=300,
-            channels=3,
-            data_augmentation=True,
+        self,
+        base_path="/opt/ml/input/data/train", #this is just the default and usually not used
+        target_height=300,
+        target_width=300,
+        channels=3,
+        data_augmentation=True,
     ):
         """Return load image function."""
 
@@ -250,17 +249,41 @@ class ArcFaceDataLoader(BaseDataLoader):
         return dataset.prefetch(tf.data.experimental.AUTOTUNE)
 
 
+def get_lr_callback(batch_size):
+    lr_start = 0.000001
+    lr_max = 0.000005 * batch_size
+    lr_min = 0.000001
+    lr_ramp_ep = 5
+    lr_sus_ep = 0
+    lr_decay = 0.8
+
+    def lrfn(epoch):
+        if epoch < lr_ramp_ep:
+            lr = (lr_max - lr_start) / lr_ramp_ep * epoch + lr_start
+        elif epoch < lr_ramp_ep + lr_sus_ep:
+            lr = lr_max
+        else:
+            lr = (lr_max - lr_min) * lr_decay ** (epoch - lr_ramp_ep - lr_sus_ep) + lr_min
+        return lr
+
+    lr_callback = tf.keras.callbacks.LearningRateScheduler(lrfn, verbose=True)
+    return lr_callback
+
 def _parse_args():
     parser = argparse.ArgumentParser()
 
+    # model_dir is always passed in from SageMaker. By default this is a S3 path under the default bucket.
     parser.add_argument('--model_dir', type=str)
     parser.add_argument('--sm-model-dir', type=str, default=os.environ.get('SM_MODEL_DIR'))
     parser.add_argument('--train', type=str, default=os.environ.get('SM_CHANNEL_TRAINING'))
     parser.add_argument('--hosts', type=list, default=json.loads(os.environ.get('SM_HOSTS')))
     parser.add_argument('--current-host', type=str, default=os.environ.get('SM_CURRENT_HOST'))
     parser.add_argument('--epochs', type=int, default=1)
+    parser.add_argument('--learning_rate', type=float, default=0.001)
+    parser.add_argument('--batch_size', type=int, default=32)
 
     return parser.parse_known_args()
+
 
 
 if __name__ == "__main__":
@@ -270,46 +293,83 @@ if __name__ == "__main__":
     tensorboard_callback = tf.keras.callbacks.TensorBoard(
         log_dir=LOG_DIR, histogram_freq=1)
 
-    data_path = '/opt/ml/input/data/train'
-    train_path = os.path.join(data_path, 'train_images_rescaled_partial')
-    test_path = os.path.join(data_path, 'clown_fiesta')
-    train_csv_path = os.path.join(data_path, 'train.csv')
-    test_csv_path = os.path.join(data_path, 'train.csv')
-    train_df = pd.read_csv(train_csv_path)
+    image_column = 'id'
+    label_column = 'articleType'
 
-    train_image_paths = train_df['image'].tolist()
-    train_image_labels = train_df['label_group'].tolist()
+    data_path = '/opt/ml/input/data/train'
+    batch_size = args.batch_size
+
+    train_path = os.path.join(data_path, 'train')
+    train_csv_path = os.path.join(data_path, 'train.csv')
+    train_df = pd.read_csv(train_csv_path)
+    train_image_paths = train_df[image_column].tolist()
+    train_image_labels = train_df[label_column].tolist()
+
     arc_face_data_loader = ArcFaceDataLoader(
         base_path=train_path,
         labels=train_image_labels,
         filenames=train_image_paths,
         target_width=300,
         target_height=300,
-        batch_size=32,
+        batch_size=batch_size,
         shuffle_buffer_size=50,
         data_augmentation=True)
 
-    test_image_paths = train_df['image'].tolist()
-    test_image_labels = train_df['label_group'].tolist()
+    test_path = os.path.join(data_path, 'test')
+    test_csv_path = os.path.join(data_path, 'test.csv')
+    test_df = pd.read_csv(test_csv_path)
+    test_image_paths = test_df[image_column].tolist()
+    test_image_labels = test_df[label_column].tolist()
+
     test_data_loader = ArcFaceDataLoader(
         base_path=test_path,
         labels=test_image_labels,
         filenames=test_image_paths,
         target_width=300,
         target_height=300,
-        batch_size=32,
+        batch_size=batch_size,
+        shuffle_buffer_size=50,
+        data_augmentation=True)
+
+    val_path = os.path.join(data_path, 'val')
+    val_csv_path = os.path.join(data_path, 'val.csv')
+    val_df = pd.read_csv(val_csv_path)
+    val_image_paths = val_df[image_column].tolist()
+    val_image_labels = val_df[label_column].tolist()
+
+    val_data_loader = ArcFaceDataLoader(
+        base_path=val_path,
+        labels=val_image_labels,
+        filenames=val_image_paths,
+        target_width=300,
+        target_height=300,
+        batch_size=batch_size,
         shuffle_buffer_size=50,
         data_augmentation=True)
 
     train_dataset = arc_face_data_loader.get_dataset()
     test_dataset = test_data_loader.get_dataset()
+    val_dataset = val_data_loader.get_dataset()
 
-    n_classes = int(max(max(train_image_labels), max(test_image_labels)) + 1)
+    early_stopping = tf.keras.callbacks.EarlyStopping(
+        monitor='val_sparse_categorical_accuracy',
+        min_delta=0,
+        patience=0,
+        verbose=0,
+        mode='auto',
+        baseline=None,
+        restore_best_weights=False,
+        start_from_epoch=0)
 
-    model = get_arc_model(n_classes=n_classes, dense_layers=[512])
-    model.fit(train_dataset, epochs=args.epochs, callbacks=tensorboard_callback)
-    model.evaluate(test_dataset)
+    lr_callback = get_lr_callback(batch_size)
+    n_classes = int(max(max(train_image_labels), max(test_image_labels), max(val_image_labels)) + 1)
+    checkpoint = tf.keras.callbacks.ModelCheckpoint(f'Arc_model_11000.h5',
+                                                    monitor = 'val_sparse_categorical_accuracy',
+                                                    verbose = 2,
+                                                    save_best_only = True,
+                                                    save_weights_only = True,
+                                                    mode = 'min')
 
-    if args.current_host == args.hosts[0]:
-        # save model to an S3 directory with version number '00000001'
-        model.save(os.path.join(args.sm_model_dir, '000000001'), 'my_model.h5')
+    model = get_arc_model(n_classes=n_classes, dense_layers=[512], learning_rate=args.learning_rate)
+    model.fit(train_dataset, epochs=args.epochs, validation_data=val_dataset, callbacks=[tensorboard_callback, early_stopping, lr_callback, checkpoint], verbose=2)
+    model.evaluate(test_dataset, verbose=2)
