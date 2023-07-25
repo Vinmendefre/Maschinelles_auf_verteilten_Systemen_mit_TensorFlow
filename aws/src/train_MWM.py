@@ -251,7 +251,8 @@ class ArcFaceDataLoader(BaseDataLoader):
 
 def get_lr_callback(batch_size):
     lr_start = 0.000001
-    lr_max = 0.000005 * batch_size
+    #lr_max = min((0.000005 * batch_size), 0.00128) #das begrenz die  lernrate auf maximal 0.00128
+    lr_max = (0.000005 * batch_size) / len(args.hosts)  # das passt die learning der an die anzahl der instanzen an
     lr_min = 0.000001
     lr_ramp_ep = 5
     lr_sus_ep = 0
@@ -373,5 +374,4 @@ if __name__ == "__main__":
                              checkpoint],
                   verbose=2)
         model.evaluate(test_dataset, verbose=2)
-
 
