@@ -24,7 +24,7 @@ Die Logs sind hier mit ihren Jobnamen betitelt. Das Schema hierbei ist folgende.
 MWM001-33000d-artType-2i-128b-m5-4xlarge-10e-230713-102652
 
 MWM steht für Multi Worker Mirrored Strategy
-001 für die Testnummer innerhalb der Obergruppe.
+201 2 Steht für die Testgruppe, 1 für die Testnummer innerhalb der Gruppe.
 33000d ist die Größe des verwendeten Datensatzes.
 artType steht für article Type als verwendete Klassifikation.
 2i ist die Instanzanzahl
